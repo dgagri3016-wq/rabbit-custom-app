@@ -15,7 +15,7 @@ import io
 
 # Exact release URL from your GitHub repository (dgagri3016-wq/rabbit-custom-app)
 BREED_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_breed_final_model.keras"
-WEIGHT_PIPELINE_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_weight_pipeline.joblib"
+WEIGHT_PIPELINE_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/rabbit_weight_pipeline.joblib"
 
 BREED_MODEL_PATH = "rabbit_breed_final_model.keras"
 WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
