@@ -1,24 +1,27 @@
-import streamlit as st
-import tensorflow as tf
-import numpy as np
-from PIL import Image
+import io
 import os
 import urllib.request
-import pandas as pd
 import joblib
+import numpy as np
+import pandas as pd
 import requests
-import io
+import streamlit as st
+import tensorflow as tf
+from PIL import Image
+from ultralytics import YOLO
 
 # ==========================================
 # 1. SETUP & CONSTANTS
 # ==========================================
 
-# Exact release URL from your GitHub repository (dgagri3016-wq/rabbit-custom-app)
+# Release URLs for heavy assets from GitHub Releases
 BREED_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_breed_final_model.keras"
 WEIGHT_PIPELINE_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/rabbit_weight_pipeline.joblib"
+YOLO_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/yolov8n-seg.pt"
 
 BREED_MODEL_PATH = "rabbit_breed_final_model.keras"
 WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
+YOLO_MODEL_PATH = "yolov8n-seg.pt"
 LABELS_PATH = "tlabels.txt"
 
 BREED_IMG_SIZE = (299, 299)
@@ -26,8 +29,8 @@ BREED_IMG_SIZE = (299, 299)
 # Page configuration
 st.set_page_config(page_title="Rabbit AI Predictor", page_icon="🐇", layout="centered")
 
-st.markdown("<h2 style='text-align: center;'>🐇 Rabbit AI Predictor</h2>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Upload or take a photo to analyze your rabbit</p>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center;'>🐇 Automated Rabbit AI Predictor</h2>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Upload or capture a photo to automatically estimate breed, mask area, and weight</p>", unsafe_allow_html=True)
 
 # ==========================================
 # 2. MODEL & FILE LOADERS
@@ -35,7 +38,7 @@ st.markdown("<p style='text-align: center; color: gray;'>Upload or take a photo 
 
 @st.cache_resource
 def load_breed_model():
-    """Downloads Keras model from GitHub release if missing or corrupted."""
+    """Downloads & loads the Keras breed classification model."""
     if os.path.exists(BREED_MODEL_PATH) and os.path.getsize(BREED_MODEL_PATH) < 1000000:
         os.remove(BREED_MODEL_PATH)
             
@@ -47,15 +50,22 @@ def load_breed_model():
 
 @st.cache_resource
 def load_weight_pipeline():
-    """Loads the Random Forest + OneHotEncoder pipeline."""
-    # If the joblib file exists locally in repo main branch, load it directly
+    """Loads the Random Forest + OneHotEncoder weight pipeline."""
     if os.path.exists(WEIGHT_PIPELINE_PATH):
         return joblib.load(WEIGHT_PIPELINE_PATH)
     
-    # Fallback to download from Release assets if missing
     st.info("Downloading Weight Prediction Pipeline... Please wait.")
     urllib.request.urlretrieve(WEIGHT_PIPELINE_URL, WEIGHT_PIPELINE_PATH)
     return joblib.load(WEIGHT_PIPELINE_PATH)
+
+@st.cache_resource
+def load_yolo_model():
+    """Downloads & loads the YOLOv8 Segmentation model."""
+    if not os.path.exists(YOLO_MODEL_PATH):
+        st.info("Downloading YOLO Segmentation Model... Please wait.")
+        urllib.request.urlretrieve(YOLO_MODEL_URL, YOLO_MODEL_PATH)
+        
+    return YOLO(YOLO_MODEL_PATH)
 
 @st.cache_data
 def load_labels():
@@ -65,7 +75,7 @@ def load_labels():
         return [line.strip() for line in f.readlines() if line.strip()]
 
 # ==========================================
-# 3. IMAGE PREPROCESSING
+# 3. HELPER FUNCTIONS
 # ==========================================
 
 def preprocess_image_for_breed(image):
@@ -74,13 +84,40 @@ def preprocess_image_for_breed(image):
     img_array = np.array(image)
     return np.expand_dims(img_array, axis=0)
 
+def extract_yolo_segmentation(image, yolo_model):
+    """
+    Runs YOLOv8 Segmentation on the PIL Image.
+    Returns:
+        - calculated_area (float): Total pixel count inside the rabbit silhouette mask.
+        - annotated_img (PIL Image or None): Image rendered with YOLO segmentation overlay.
+    """
+    # Convert PIL Image to RGB numpy array
+    img_array = np.array(image.convert("RGB"))
+    results = yolo_model(img_array, verbose=False)
+    
+    calculated_area = 0.0
+    annotated_img = None
+    
+    if len(results) > 0 and results[0].masks is not None:
+        # Extract binary mask data array
+        masks = results[0].masks.data.cpu().numpy()
+        
+        # Calculate pixel count of the primary/largest mask
+        calculated_area = float(np.sum(masks[0] > 0))
+        
+        # Generate plot image showing the visual segmentation mask
+        res_plotted = results[0].plot()
+        annotated_img = Image.fromarray(res_plotted[..., ::-1])  # Convert BGR to RGB
+        
+    return calculated_area, annotated_img
+
 # ==========================================
 # 4. MAIN APP LOGIC
 # ==========================================
 
 class_labels = load_labels()
 if not class_labels:
-    st.error(f"Missing {LABELS_PATH}. Ensure tlabels.txt is in your repo main folder.")
+    st.error(f"Missing {LABELS_PATH}. Ensure tlabels.txt is present in your repo main folder.")
     st.stop()
 
 if "saved_image" not in st.session_state:
@@ -129,20 +166,35 @@ elif option == "ESP32-CAM via Ngrok":
 # ==========================================
 
 if st.session_state.saved_image is not None:
-    st.image(st.session_state.saved_image, use_container_width=True)
+    st.image(st.session_state.saved_image, caption="Original Image", use_container_width=True)
     
-    # Input for YOLO segmentation pixel count
+    # Run YOLO Segmentation automatically on load
+    yolo_model = load_yolo_model()
+    auto_mask_area, annotated_img = extract_yolo_segmentation(st.session_state.saved_image, yolo_model)
+    
+    if annotated_img is not None:
+        with st.expander("🔍 View YOLO Segmentation Mask Overlay", expanded=False):
+            st.image(annotated_img, caption="Detected Rabbit Mask", use_container_width=True)
+    
+    # Display calculated pixel mask area with manual override fallback
+    if auto_mask_area > 0:
+        st.success(f"YOLO Segmentation detected rabbit mask: **{auto_mask_area:,.0f} pixels**")
+        default_val = float(auto_mask_area)
+    else:
+        st.warning("YOLO could not automatically detect a rabbit silhouette mask. Using default mask area.")
+        default_val = 35000.0
+
     mask_area = st.number_input(
         "📐 YOLO Mask Area (Pixels):",
         min_value=1000.0,
-        max_value=200000.0,
-        value=35000.0,
+        max_value=300000.0,
+        value=default_val,
         step=500.0,
-        help="Enter the total pixel area extracted from your YOLOv8 segmentation mask."
+        help="Automatically calculated by YOLOv8-Seg. You can adjust it manually if needed."
     )
     
-    if st.button("🔮 Predict Breed & Weight", type="primary"):
-        with st.spinner("Analyzing..."):
+    if st.button("🔮 Predict Breed & Weight", type="primary", use_container_width=True):
+        with st.spinner("Analyzing image and calculating weight..."):
             
             # --- BREED PREDICTION ---
             breed_model = load_breed_model()
@@ -163,7 +215,7 @@ if st.session_state.saved_image is not None:
             try:
                 weight_pipeline = load_weight_pipeline()
                 
-                # Input dataframe matching training features
+                # Format input matching training features ['mask_area', 'breed']
                 input_df = pd.DataFrame([{
                     'mask_area': mask_area,
                     'breed': predicted_label
