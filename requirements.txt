@@ -1,7 +1,10 @@
 streamlit
-pandas
-numpy
-joblib
-pillow
-scikit-learn
 tensorflow
+numpy
+pillow
+pandas
+scikit-learn
+joblib
+requests
+ultralytics
+opencv-python-headless
