@@ -4,7 +4,6 @@ import urllib.request
 import joblib
 import numpy as np
 import pandas as pd
-import requests
 import streamlit as st
 import tensorflow as tf
 from PIL import Image
@@ -20,12 +19,13 @@ WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
 LABELS_PATH = "tlabels.txt"
 
 BREED_IMG_SIZE = (299, 299)
+DEFAULT_MASK_AREA = 35000.0  # Background constant used for weight estimation
 
 # Page configuration
 st.set_page_config(page_title="Rabbit AI Predictor", page_icon="🐇", layout="centered")
 
 st.markdown("<h2 style='text-align: center;'>🐇 Rabbit AI Predictor</h2>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Upload or capture a photo to estimate breed and weight</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Take or upload a photo to analyze your rabbit</p>", unsafe_allow_html=True)
 
 # ==========================================
 # 2. MODEL & FILE LOADERS
@@ -81,61 +81,29 @@ if not class_labels:
 if "saved_image" not in st.session_state:
     st.session_state.saved_image = None
 
+# Default selection set to "Camera Capture"
 option = st.selectbox(
     "📸 Choose image source:", 
-    ("Upload Image", "Camera Capture", "ESP32-CAM via Ngrok")
+    ("Camera Capture", "Upload Image")
 )
 
-if option == "Upload Image":
-    uploaded_file = st.file_uploader("Select a photo", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-    if uploaded_file is not None:
-        st.session_state.saved_image = Image.open(uploaded_file)
-
-elif option == "Camera Capture":
+if option == "Camera Capture":
     camera_file = st.camera_input("Take a picture")
     if camera_file is not None:
         st.session_state.saved_image = Image.open(camera_file)
 
-elif option == "ESP32-CAM via Ngrok":
-    st.info("Ensure your ESP32 is running and Ngrok is forwarding the tunnel.")
-    ngrok_url = st.text_input("🔗 Paste your Ngrok URL here:", placeholder="https://1234-abcd.ngrok-free.app")
-    
-    if st.button("📸 Capture from ESP32"):
-        if ngrok_url:
-            capture_url = f"{ngrok_url.strip().rstrip('/')}/capture"
-            try:
-                with st.spinner("Snapping photo from ESP32..."):
-                    headers = {"ngrok-skip-browser-warning": "true"}
-                    response = requests.get(capture_url, headers=headers, timeout=45)
-                    
-                if response.status_code == 200:
-                    st.session_state.saved_image = Image.open(io.BytesIO(response.content))
-                    st.success("Photo captured!")
-                else:
-                    st.error(f"Failed to capture! Status Code: {response.status_code}")
-                    st.write(response.text[:200])
-            except Exception as e:
-                st.error(f"Error connecting to camera: {e}")
-        else:
-            st.warning("Please paste your Ngrok URL first!")
+elif option == "Upload Image":
+    uploaded_file = st.file_uploader("Select a photo", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+    if uploaded_file is not None:
+        st.session_state.saved_image = Image.open(uploaded_file)
+        # Display preview only for uploaded files (camera input has its own preview)
+        st.image(st.session_state.saved_image, caption="Uploaded Image", use_container_width=True)
 
 # ==========================================
 # 5. PREDICTION & RESULTS DISPLAY
 # ==========================================
 
 if st.session_state.saved_image is not None:
-    st.image(st.session_state.saved_image, caption="Rabbit Image", use_container_width=True)
-    
-    # Pixel area input for Random Forest regressor
-    mask_area = st.number_input(
-        "📐 YOLO Mask Area (Pixels):",
-        min_value=1000.0,
-        max_value=300000.0,
-        value=35000.0,
-        step=500.0,
-        help="Enter the total pixel area extracted from your YOLO segmentation mask."
-    )
-    
     if st.button("🔮 Predict Breed & Weight", type="primary", use_container_width=True):
         with st.spinner("Analyzing image and calculating weight..."):
             
@@ -158,8 +126,9 @@ if st.session_state.saved_image is not None:
             try:
                 weight_pipeline = load_weight_pipeline()
                 
+                # Pass breed and background default mask area to pipeline
                 input_df = pd.DataFrame([{
-                    'mask_area': mask_area,
+                    'mask_area': DEFAULT_MASK_AREA,
                     'breed': predicted_label
                 }])
                 
