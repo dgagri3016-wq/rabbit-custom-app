@@ -6,5 +6,3 @@ pandas
 scikit-learn
 joblib
 requests
-ultralytics
-opencv-python-headless
