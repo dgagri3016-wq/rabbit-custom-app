@@ -19,13 +19,13 @@ WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
 LABELS_PATH = "tlabels.txt"
 
 BREED_IMG_SIZE = (299, 299)
-DEFAULT_MASK_AREA = 35000.0  # Background constant used for weight estimation
+DEFAULT_MASK_AREA = 35000.0  # Constant passed behind the scenes for weight estimation
 
 # Page configuration
 st.set_page_config(page_title="Rabbit AI Predictor", page_icon="🐇", layout="centered")
 
 st.markdown("<h2 style='text-align: center;'>🐇 Rabbit AI Predictor</h2>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Take or upload a photo to analyze your rabbit</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Take or upload a photo to instantly analyze your rabbit</p>", unsafe_allow_html=True)
 
 # ==========================================
 # 2. MODEL & FILE LOADERS
@@ -91,56 +91,57 @@ if option == "Camera Capture":
     camera_file = st.camera_input("Take a picture")
     if camera_file is not None:
         st.session_state.saved_image = Image.open(camera_file)
+    else:
+        st.session_state.saved_image = None
 
 elif option == "Upload Image":
     uploaded_file = st.file_uploader("Select a photo", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
     if uploaded_file is not None:
         st.session_state.saved_image = Image.open(uploaded_file)
-        # Display preview only for uploaded files (camera input has its own preview)
         st.image(st.session_state.saved_image, caption="Uploaded Image", use_container_width=True)
+    else:
+        st.session_state.saved_image = None
 
 # ==========================================
-# 5. PREDICTION & RESULTS DISPLAY
+# 5. AUTOMATIC PREDICTION & RESULTS DISPLAY
 # ==========================================
 
 if st.session_state.saved_image is not None:
-    if st.button("🔮 Predict Breed & Weight", type="primary", use_container_width=True):
-        with st.spinner("Analyzing image and calculating weight..."):
+    with st.spinner("Analyzing image and calculating weight..."):
+        
+        # --- BREED PREDICTION ---
+        breed_model = load_breed_model()
+        breed_processed = preprocess_image_for_breed(st.session_state.saved_image)
+        breed_predictions = breed_model.predict(breed_processed)
+        
+        predicted_index = np.argmax(breed_predictions[0])
+        confidence = breed_predictions[0][predicted_index]
+        predicted_label = class_labels[predicted_index]
+        
+        st.divider() 
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Primary Breed", predicted_label)
+        col2.metric("Confidence", f"{confidence * 100:.1f}%")
+        
+        # --- WEIGHT PREDICTION (Joblib Pipeline) ---
+        try:
+            weight_pipeline = load_weight_pipeline()
             
-            # --- BREED PREDICTION ---
-            breed_model = load_breed_model()
-            breed_processed = preprocess_image_for_breed(st.session_state.saved_image)
-            breed_predictions = breed_model.predict(breed_processed)
+            input_df = pd.DataFrame([{
+                'mask_area': DEFAULT_MASK_AREA,
+                'breed': predicted_label
+            }])
             
-            predicted_index = np.argmax(breed_predictions[0])
-            confidence = breed_predictions[0][predicted_index]
-            predicted_label = class_labels[predicted_index]
+            predicted_weight = weight_pipeline.predict(input_df)[0]
             
-            st.divider() 
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Primary Breed", predicted_label)
-            col2.metric("Confidence", f"{confidence * 100:.1f}%")
-            
-            # --- WEIGHT PREDICTION (Joblib Pipeline) ---
-            try:
-                weight_pipeline = load_weight_pipeline()
-                
-                # Pass breed and background default mask area to pipeline
-                input_df = pd.DataFrame([{
-                    'mask_area': DEFAULT_MASK_AREA,
-                    'breed': predicted_label
-                }])
-                
-                predicted_weight = weight_pipeline.predict(input_df)[0]
-                
-                st.metric("⚖️ Estimated Weight", f"{predicted_weight:.2f} kg")
-            except Exception as e:
-                st.error(f"Could not calculate weight: {e}")
+            st.metric("⚖️ Estimated Weight", f"{predicted_weight:.2f} kg")
+        except Exception as e:
+            st.error(f"Could not calculate weight: {e}")
 
-            # --- PROBABILITY BREAKDOWN ---
-            with st.expander("📊 View Top 3 Breed Probabilities"):
-                top_indices = np.argsort(breed_predictions[0])[-3:][::-1]
-                for i in top_indices:
-                    st.write(f"**{class_labels[i]}**")
-                    st.progress(float(breed_predictions[0][i]))
+        # --- PROBABILITY BREAKDOWN ---
+        with st.expander("📊 View Top 3 Breed Probabilities"):
+            top_indices = np.argsort(breed_predictions[0])[-3:][::-1]
+            for i in top_indices:
+                st.write(f"**{class_labels[i]}**")
+                st.progress(float(breed_predictions[0][i]))
