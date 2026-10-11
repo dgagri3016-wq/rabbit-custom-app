@@ -14,14 +14,13 @@ from ultralytics import YOLO
 # 1. SETUP & CONSTANTS
 # ==========================================
 
-# Release URLs for heavy assets from GitHub Releases
+# Direct download links for heavy model files in GitHub Release 'breed-model'
 BREED_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_breed_final_model.keras"
-WEIGHT_PIPELINE_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/rabbit_weight_pipeline.joblib"
 YOLO_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/yolov8n-seg.pt"
 
 BREED_MODEL_PATH = "rabbit_breed_final_model.keras"
-WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
 YOLO_MODEL_PATH = "yolov8n-seg.pt"
+WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
 LABELS_PATH = "tlabels.txt"
 
 BREED_IMG_SIZE = (299, 299)
@@ -38,7 +37,7 @@ st.markdown("<p style='text-align: center; color: gray;'>Upload or capture a pho
 
 @st.cache_resource
 def load_breed_model():
-    """Downloads & loads the Keras breed classification model."""
+    """Downloads Keras breed model from GitHub Release if missing."""
     if os.path.exists(BREED_MODEL_PATH) and os.path.getsize(BREED_MODEL_PATH) < 1000000:
         os.remove(BREED_MODEL_PATH)
             
@@ -49,26 +48,25 @@ def load_breed_model():
     return tf.keras.models.load_model(BREED_MODEL_PATH)
 
 @st.cache_resource
-def load_weight_pipeline():
-    """Loads the Random Forest + OneHotEncoder weight pipeline."""
-    if os.path.exists(WEIGHT_PIPELINE_PATH):
-        return joblib.load(WEIGHT_PIPELINE_PATH)
-    
-    st.info("Downloading Weight Prediction Pipeline... Please wait.")
-    urllib.request.urlretrieve(WEIGHT_PIPELINE_URL, WEIGHT_PIPELINE_PATH)
-    return joblib.load(WEIGHT_PIPELINE_PATH)
-
-@st.cache_resource
 def load_yolo_model():
-    """Downloads & loads the YOLOv8 Segmentation model."""
+    """Downloads YOLOv8 Segmentation model from GitHub Release if missing."""
     if not os.path.exists(YOLO_MODEL_PATH):
-        st.info("Downloading YOLO Segmentation Model... Please wait.")
+        st.info("Downloading YOLO Segmentation Model from GitHub Release... Please wait.")
         urllib.request.urlretrieve(YOLO_MODEL_URL, YOLO_MODEL_PATH)
         
     return YOLO(YOLO_MODEL_PATH)
 
+@st.cache_resource
+def load_weight_pipeline():
+    """Loads the Scikit-Learn weight pipeline directly from repo main folder."""
+    if not os.path.exists(WEIGHT_PIPELINE_PATH):
+        st.error(f"Missing '{WEIGHT_PIPELINE_PATH}'. Ensure it is committed directly to your repository main branch.")
+        st.stop()
+    return joblib.load(WEIGHT_PIPELINE_PATH)
+
 @st.cache_data
 def load_labels():
+    """Loads breed labels from tlabels.txt."""
     if not os.path.exists(LABELS_PATH):
         return None
     with open(LABELS_PATH, "r") as f:
@@ -86,12 +84,8 @@ def preprocess_image_for_breed(image):
 
 def extract_yolo_segmentation(image, yolo_model):
     """
-    Runs YOLOv8 Segmentation on the PIL Image.
-    Returns:
-        - calculated_area (float): Total pixel count inside the rabbit silhouette mask.
-        - annotated_img (PIL Image or None): Image rendered with YOLO segmentation overlay.
+    Runs YOLOv8 Segmentation on the image to compute pixel area.
     """
-    # Convert PIL Image to RGB numpy array
     img_array = np.array(image.convert("RGB"))
     results = yolo_model(img_array, verbose=False)
     
@@ -99,13 +93,9 @@ def extract_yolo_segmentation(image, yolo_model):
     annotated_img = None
     
     if len(results) > 0 and results[0].masks is not None:
-        # Extract binary mask data array
         masks = results[0].masks.data.cpu().numpy()
-        
-        # Calculate pixel count of the primary/largest mask
         calculated_area = float(np.sum(masks[0] > 0))
         
-        # Generate plot image showing the visual segmentation mask
         res_plotted = results[0].plot()
         annotated_img = Image.fromarray(res_plotted[..., ::-1])  # Convert BGR to RGB
         
@@ -117,7 +107,7 @@ def extract_yolo_segmentation(image, yolo_model):
 
 class_labels = load_labels()
 if not class_labels:
-    st.error(f"Missing {LABELS_PATH}. Ensure tlabels.txt is present in your repo main folder.")
+    st.error(f"Missing {LABELS_PATH}. Ensure tlabels.txt is in your repo main folder.")
     st.stop()
 
 if "saved_image" not in st.session_state:
@@ -176,7 +166,7 @@ if st.session_state.saved_image is not None:
         with st.expander("🔍 View YOLO Segmentation Mask Overlay", expanded=False):
             st.image(annotated_img, caption="Detected Rabbit Mask", use_container_width=True)
     
-    # Display calculated pixel mask area with manual override fallback
+    # Display calculated pixel area with manual override fallback
     if auto_mask_area > 0:
         st.success(f"YOLO Segmentation detected rabbit mask: **{auto_mask_area:,.0f} pixels**")
         default_val = float(auto_mask_area)
@@ -215,7 +205,7 @@ if st.session_state.saved_image is not None:
             try:
                 weight_pipeline = load_weight_pipeline()
                 
-                # Format input matching training features ['mask_area', 'breed']
+                # Format input dataframe matching training features ['mask_area', 'breed']
                 input_df = pd.DataFrame([{
                     'mask_area': mask_area,
                     'breed': predicted_label
