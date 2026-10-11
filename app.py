@@ -1,151 +1,183 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
-from PIL import Image
 import tensorflow as tf
+import numpy as np
+from PIL import Image
+import os
+import urllib.request
+import pandas as pd
+import joblib
+import requests
+import io
 
 # ==========================================
-# PAGE CONFIGURATION & STYLING
+# 1. SETUP & CONSTANTS
 # ==========================================
-st.set_page_config(
-    page_title="Rabbit Weight Predictor",
-    page_icon="🐇",
-    layout="centered"
-)
 
-st.title("🐇 Rabbit Weight Prediction System")
-st.markdown(
-    "Upload a rabbit image for automatic breed classification, then provide the "
-    "segmented mask area (in pixels) to estimate the rabbit's weight."
-)
+# Exact release URL from your GitHub repository (dgagri3016-wq/rabbit-custom-app)
+BREED_MODEL_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_breed_final_model.keras"
+WEIGHT_PIPELINE_URL = "https://github.com/dgagri3016-wq/rabbit-custom-app/releases/download/breed-model/rabbit_weight_pipeline.joblib"
+
+BREED_MODEL_PATH = "rabbit_breed_final_model.keras"
+WEIGHT_PIPELINE_PATH = "rabbit_weight_pipeline.joblib"
+LABELS_PATH = "tlabels.txt"
+
+BREED_IMG_SIZE = (299, 299)
+
+# Page configuration
+st.set_page_config(page_title="Rabbit AI Predictor", page_icon="🐇", layout="centered")
+
+st.markdown("<h2 style='text-align: center;'>🐇 Rabbit AI Predictor</h2>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Upload or take a photo to analyze your rabbit</p>", unsafe_allow_html=True)
 
 # ==========================================
-# MODEL LOADING (CACHED)
+# 2. MODEL & FILE LOADERS
 # ==========================================
-@st.cache_resource
-def load_weight_pipeline():
-    """Loads the Random Forest + OneHotEncoder pipeline."""
-    return joblib.load('rabbit_weight_pipeline.joblib')
 
 @st.cache_resource
 def load_breed_model():
-    """Loads your trained Keras model for breed prediction."""
-    try:
-        # Update this filename if your Keras model has a different name
-        return tf.keras.models.load_model('rabbit_breed_model.keras')
-    except Exception as e:
-        return None
-
-weight_pipeline = load_weight_pipeline()
-breed_model = load_breed_model()
-
-# List of breed labels matching your Keras model's output indices
-BREED_CLASSES = ["Holland lop", "Mini rex", "New zealand white"]
-
-
-# ==========================================
-# HELPER FUNCTIONS
-# ==========================================
-def preprocess_and_predict_breed(image, model):
-    """
-    Preprocesses the uploaded image and passes it to the Keras breed model.
-    Adjust image resizing (e.g., 224x224) to match your Keras training setup.
-    """
-    if model is None:
-        return None
-    
-    # Resize image to match Keras input specs (e.g., 224x224 or 128x128)
-    img = image.resize((224, 224))
-    img_array = np.array(img) / 255.0  # Normalize if model was trained with 0-1 scaling
-    
-    # Ensure 3 channels (RGB)
-    if img_array.ndim == 2:  # Grayscale
-        img_array = np.stack((img_array,)*3, axis=-1)
-    elif img_array.shape[2] == 4:  # RGBA
-        img_array = img_array[:, :, :3]
+    """Downloads Keras model from GitHub release if missing or corrupted."""
+    if os.path.exists(BREED_MODEL_PATH) and os.path.getsize(BREED_MODEL_PATH) < 1000000:
+        os.remove(BREED_MODEL_PATH)
+            
+    if not os.path.exists(BREED_MODEL_PATH):
+        st.info("Downloading Keras Breed Model from GitHub Release... Please wait.")
+        urllib.request.urlretrieve(BREED_MODEL_URL, BREED_MODEL_PATH)
         
-    img_batch = np.expand_dims(img_array, axis=0)
-    
-    # Model inference
-    predictions = model.predict(img_batch)
-    predicted_class_idx = np.argmax(predictions[0])
-    
-    return BREED_CLASSES[predicted_class_idx]
+    return tf.keras.models.load_model(BREED_MODEL_PATH)
 
+@st.cache_resource
+def load_weight_pipeline():
+    """Loads the Random Forest + OneHotEncoder pipeline."""
+    # If the joblib file exists locally in repo main branch, load it directly
+    if os.path.exists(WEIGHT_PIPELINE_PATH):
+        return joblib.load(WEIGHT_PIPELINE_PATH)
+    
+    # Fallback to download from Release assets if missing
+    st.info("Downloading Weight Prediction Pipeline... Please wait.")
+    urllib.request.urlretrieve(WEIGHT_PIPELINE_URL, WEIGHT_PIPELINE_PATH)
+    return joblib.load(WEIGHT_PIPELINE_PATH)
+
+@st.cache_data
+def load_labels():
+    if not os.path.exists(LABELS_PATH):
+        return None
+    with open(LABELS_PATH, "r") as f:
+        return [line.strip() for line in f.readlines() if line.strip()]
 
 # ==========================================
-# USER INPUT INTERFACE
+# 3. IMAGE PREPROCESSING
 # ==========================================
-st.subheader("1. Input Data")
 
-col1, col2 = st.columns([1, 1])
+def preprocess_image_for_breed(image):
+    image = image.convert("RGB")
+    image = image.resize(BREED_IMG_SIZE)
+    img_array = np.array(image)
+    return np.expand_dims(img_array, axis=0)
 
-with col1:
-    uploaded_file = st.file_uploader("Upload Rabbit Image", type=["jpg", "jpeg", "png"])
+# ==========================================
+# 4. MAIN APP LOGIC
+# ==========================================
+
+class_labels = load_labels()
+if not class_labels:
+    st.error(f"Missing {LABELS_PATH}. Ensure tlabels.txt is in your repo main folder.")
+    st.stop()
+
+if "saved_image" not in st.session_state:
+    st.session_state.saved_image = None
+
+option = st.selectbox(
+    "📸 Choose image source:", 
+    ("Upload Image", "Camera Capture", "ESP32-CAM via Ngrok")
+)
+
+if option == "Upload Image":
+    uploaded_file = st.file_uploader("Select a photo", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
     if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_container_width=True)
+        st.session_state.saved_image = Image.open(uploaded_file)
 
-with col2:
+elif option == "Camera Capture":
+    camera_file = st.camera_input("Take a picture")
+    if camera_file is not None:
+        st.session_state.saved_image = Image.open(camera_file)
+
+elif option == "ESP32-CAM via Ngrok":
+    st.info("Ensure your ESP32 is running and Ngrok is forwarding the tunnel.")
+    ngrok_url = st.text_input("🔗 Paste your Ngrok URL here:", placeholder="https://1234-abcd.ngrok-free.app")
+    
+    if st.button("📸 Capture from ESP32"):
+        if ngrok_url:
+            capture_url = f"{ngrok_url.strip().rstrip('/')}/capture"
+            try:
+                with st.spinner("Snapping photo from ESP32..."):
+                    headers = {"ngrok-skip-browser-warning": "true"}
+                    response = requests.get(capture_url, headers=headers, timeout=45)
+                    
+                if response.status_code == 200:
+                    st.session_state.saved_image = Image.open(io.BytesIO(response.content))
+                    st.success("Photo captured!")
+                else:
+                    st.error(f"Failed to capture! Status Code: {response.status_code}")
+                    st.write(response.text[:200])
+            except Exception as e:
+                st.error(f"Error connecting to camera: {e}")
+        else:
+            st.warning("Please paste your Ngrok URL first!")
+
+# ==========================================
+# 5. PREDICTION & RESULTS DISPLAY
+# ==========================================
+
+if st.session_state.saved_image is not None:
+    st.image(st.session_state.saved_image, use_container_width=True)
+    
+    # Input for YOLO segmentation pixel count
     mask_area = st.number_input(
-        "Mask Area (Pixels from YOLO)",
+        "📐 YOLO Mask Area (Pixels):",
         min_value=1000.0,
-        max_value=150000.0,
+        max_value=200000.0,
         value=35000.0,
         step=500.0,
-        help="The total pixel area extracted from your YOLOv8 segmentation mask."
+        help="Enter the total pixel area extracted from your YOLOv8 segmentation mask."
     )
-
-# Fallback breed selection if Keras model file is missing or image is not uploaded
-manual_breed = None
-if breed_model is None or uploaded_file is None:
-    manual_breed = st.selectbox(
-        "Select Breed (Manual Fallback)",
-        options=BREED_CLASSES,
-        help="Used if no image is uploaded or if the breed model isn't loaded."
-    )
-
-
-# ==========================================
-# PREDICTION LOGIC
-# ==========================================
-st.markdown("---")
-
-if st.button("Predict Weight", type="primary", use_container_width=True):
-    detected_breed = None
     
-    with st.spinner("Processing prediction..."):
-        # Step 1: Determine Breed (Automated via Keras or Manual Fallback)
-        if uploaded_file is not None and breed_model is not None:
-            detected_breed = preprocess_and_predict_breed(image, breed_model)
-        else:
-            detected_breed = manual_breed
+    if st.button("🔮 Predict Breed & Weight", type="primary"):
+        with st.spinner("Analyzing..."):
             
-        # Step 2: Format data for the Weight Pipeline
-        input_data = pd.DataFrame([{
-            'mask_area': mask_area,
-            'breed': detected_breed
-        }])
-        
-        # Step 3: Estimate Weight using the Scikit-Learn Pipeline
-        predicted_weight = weight_pipeline.predict(input_data)[0]
+            # --- BREED PREDICTION ---
+            breed_model = load_breed_model()
+            breed_processed = preprocess_image_for_breed(st.session_state.saved_image)
+            breed_predictions = breed_model.predict(breed_processed)
+            
+            predicted_index = np.argmax(breed_predictions[0])
+            confidence = breed_predictions[0][predicted_index]
+            predicted_label = class_labels[predicted_index]
+            
+            st.divider() 
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Primary Breed", predicted_label)
+            col2.metric("Confidence", f"{confidence * 100:.1f}%")
+            
+            # --- WEIGHT PREDICTION (Joblib Pipeline) ---
+            try:
+                weight_pipeline = load_weight_pipeline()
+                
+                # Input dataframe matching training features
+                input_df = pd.DataFrame([{
+                    'mask_area': mask_area,
+                    'breed': predicted_label
+                }])
+                
+                predicted_weight = weight_pipeline.predict(input_df)[0]
+                
+                st.metric("⚖️ Estimated Weight", f"{predicted_weight:.2f} kg")
+            except Exception as e:
+                st.error(f"Could not calculate weight: {e}")
 
-    # ==========================================
-    # DISPLAY RESULTS
-    # ==========================================
-    st.subheader("2. Prediction Results")
-    
-    res_col1, res_col2 = st.columns(2)
-    
-    with res_col1:
-        st.metric(
-            label="Detected / Selected Breed",
-            value=detected_breed
-        )
-        
-    with res_col2:
-        st.metric(
-            label="Predicted Weight",
-            value=f"{predicted_weight:.2f} kg"
-        )
+            # --- PROBABILITY BREAKDOWN ---
+            with st.expander("📊 View Top 3 Breed Probabilities"):
+                top_indices = np.argsort(breed_predictions[0])[-3:][::-1]
+                for i in top_indices:
+                    st.write(f"**{class_labels[i]}**")
+                    st.progress(float(breed_predictions[0][i]))
